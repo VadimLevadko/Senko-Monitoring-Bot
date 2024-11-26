@@ -1,0 +1,17 @@
+{
+  "check_interval": 1,
+  "max_message_length": 4096,
+  "max_channels_per_client": 500,
+  "max_keywords": 1000,
+  "notification_chunk_size": 50,
+  "retry_interval": 300,
+  "cleanup_interval": 86400,
+  "data_retention_days": 30,
+  "auto_restart": true,
+  "restart_delay": 60,
+  "max_errors_before_restart": 5,
+  "message_processing_timeout": 20,
+  "join_timeout": 40,
+  "flood_wait_threshold": 60,
+  "join_channel_delay": 5
+}
