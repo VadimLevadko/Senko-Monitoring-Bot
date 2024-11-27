@@ -1,0 +1,8 @@
+{"timestamp": "2024-11-27 18:18:36,663", "level": "\u001b[31;20mERROR\u001b[0m", "message": "\u001b[31;20mКомпонент monitor не работает\u001b[0m", "module": "__init__", "function": "check_status", "line": 209}
+{"timestamp": "2024-11-27 18:18:36,664", "level": "\u001b[31;20mERROR\u001b[0m", "message": "\u001b[31;20mКомпонент active_clients не работает\u001b[0m", "module": "__init__", "function": "check_status", "line": 211}
+{"timestamp": "2024-11-27 18:18:46,673", "level": "\u001b[31;20mERROR\u001b[0m", "message": "\u001b[31;20mКомпонент monitor не работает\u001b[0m", "module": "__init__", "function": "check_status", "line": 209}
+{"timestamp": "2024-11-27 18:18:46,674", "level": "\u001b[31;20mERROR\u001b[0m", "message": "\u001b[31;20mКомпонент active_clients не работает\u001b[0m", "module": "__init__", "function": "check_status", "line": 211}
+{"timestamp": "2024-11-27 18:18:56,691", "level": "\u001b[31;20mERROR\u001b[0m", "message": "\u001b[31;20mКомпонент monitor не работает\u001b[0m", "module": "__init__", "function": "check_status", "line": 209}
+{"timestamp": "2024-11-27 18:18:56,691", "level": "\u001b[31;20mERROR\u001b[0m", "message": "\u001b[31;20mКомпонент active_clients не работает\u001b[0m", "module": "__init__", "function": "check_status", "line": 211}
+{"timestamp": "2024-11-27 18:19:06,700", "level": "\u001b[31;20mERROR\u001b[0m", "message": "\u001b[31;20mКомпонент monitor не работает\u001b[0m", "module": "__init__", "function": "check_status", "line": 209}
+{"timestamp": "2024-11-27 18:19:06,702", "level": "\u001b[31;20mERROR\u001b[0m", "message": "\u001b[31;20mКомпонент active_clients не работает\u001b[0m", "module": "__init__", "function": "check_status", "line": 211}

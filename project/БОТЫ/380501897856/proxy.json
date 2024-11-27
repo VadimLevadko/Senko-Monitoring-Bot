@@ -1,0 +1,8 @@
+{
+    "proxy_type": "socks5",
+    "addr": "155.254.48.65",
+    "port": 5971,
+    "username": "sbbkvcrt",
+    "password": "epal2o1erekj",
+    "rdns": true
+}
