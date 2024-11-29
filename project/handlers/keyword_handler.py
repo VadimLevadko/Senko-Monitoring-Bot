@@ -275,7 +275,6 @@ class KeywordHandler:
                 )
 
             keyboard = [
-                [InlineKeyboardButton("🔄 Обновить", callback_data='keyword_stats')],
                 [InlineKeyboardButton("« Назад", callback_data='back_to_keywords')]
             ]
 

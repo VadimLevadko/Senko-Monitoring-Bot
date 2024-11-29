@@ -149,6 +149,10 @@ class MonitorHandler:
                 return await self.list_channels(update, context)
             elif query.data == 'check_channels':
                 return await self.check_channels(query, context)
+            elif query.data == 'confirm_delete':
+                return await self.delete_all_channels(update, context)
+            elif query.data == 'cancel_delete':
+                return await self.list_channels(update, context)
                    
             # Настройки и их редактирование
             elif query.data == 'edit_notifications':

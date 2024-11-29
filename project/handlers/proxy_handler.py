@@ -1,7 +1,8 @@
 import logging
 import os
+import telegram
 import shutil
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from telegram.ext import ContextTypes
 from project.managers.proxy_manager import ProxyManager
 from project.config import STATES
@@ -67,43 +68,63 @@ class ProxyHandler:
         self.monitor_handler = monitor_handler
 
     async def handle_proxy_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        query = update.callback_query
-        self.logger.info(f"Получен callback: {query.data}")
-        await query.answer()
-        
-        try:
-            if query.data == 'add_proxy':
-                return await self.start_proxy_addition(update, context)
-                
-            elif query.data == 'list_proxies':
-                return await self.list_proxies(update, context)
-                
-            elif query.data == 'check_proxies':
-                return await self.check_proxies(update, context)
-                
-            elif query.data == 'delete_all_proxies':
-                return await self.delete_all_proxies(update, context)
-                
-            elif query.data == 'back_to_monitor':
-                self.logger.info("Возврат в главное меню")
-                if self.monitor_handler:
-                    return await self.monitor_handler.show_monitor_menu(update, context)
-                else:
-                    self.logger.error("monitor_handler не установлен")
-                    return STATES['MONITORING']
-                    
-            return STATES['MONITORING']
-            
-        except Exception as e:
-            self.logger.error(f"Ошибка при обработке callback {query.data}: {e}")
-            await query.message.edit_text(
-                "❌ Произошла ошибка. Попробуйте еще раз.",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("« Назад", callback_data='back_to_monitor')
-                ]]),
-                parse_mode='Markdown'
-            )
-            return STATES['MONITORING']  
+       query = update.callback_query
+       self.logger.info(f"Получен callback: {query.data}")
+       
+       try:
+           try:
+               await query.answer()
+           except telegram.error.BadRequest as e:
+               if "Блять" not in str(e):
+                   raise
+           
+           if query.data == 'add_proxy':
+               return await self.start_proxy_addition(update, context)
+                   
+           elif query.data == 'list_proxies':
+               return await self.list_proxies(update, context)
+                   
+           elif query.data == 'check_proxies':
+               return await self.check_proxies(query, context)
+                   
+           elif query.data == 'delete_all_proxies':
+               with open(self.proxy_manager.proxy_file, 'w', encoding='utf-8') as f:
+                   f.write('')
+               await query.message.edit_text(
+                   "✅ Все прокси успешно удалены",
+                   reply_markup=InlineKeyboardMarkup([[
+                       InlineKeyboardButton("« Назад", callback_data='back_to_proxies')
+                   ]]),
+                   parse_mode='Markdown'
+               )
+               return STATES['MANAGING_PROXIES']
+                   
+           elif query.data == 'back_to_monitor':
+               self.logger.info("Возврат в главное меню")
+               if self.monitor_handler:
+                   return await self.monitor_handler.show_monitor_menu(update, context)
+               else:
+                   self.logger.error("monitor_handler не установлен")
+                   return STATES['MONITORING']
+                       
+           elif query.data == 'back_to_proxies':
+               return await self.show_proxy_menu(update, context)
+
+           return STATES['MONITORING']
+               
+       except Exception as e:
+           self.logger.error(f"Ошибка при обработке callback {query.data}: {e}")
+           try:
+               await query.message.edit_text(
+                   "❌ Произошла ошибка. Попробуйте еще раз.",
+                   reply_markup=InlineKeyboardMarkup([[
+                       InlineKeyboardButton("« Назад", callback_data='back_to_monitor')
+                   ]]),
+                   parse_mode='Markdown'
+               )
+           except telegram.error.BadRequest:
+               pass
+           return STATES['MONITORING']
             
     async def show_delete_confirmation(self, query: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
@@ -250,13 +271,12 @@ class ProxyHandler:
             keyboard = [
                 [InlineKeyboardButton("🔄 Обновить", callback_data='list_proxies')]
             ]
-            
-            # Добавляем кнопку удаления невалидных, только если они есть
+
             if has_invalid:
                 keyboard.append([
                     InlineKeyboardButton("🗑 Удалить невалидные", callback_data='clear_invalid_proxies')
                 ])
-                
+
             keyboard.append([InlineKeyboardButton("« Назад", callback_data='back_to_proxies')])
             
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -277,43 +297,42 @@ class ProxyHandler:
                 parse_mode='Markdown'
             )
 
-    async def check_proxies(self, query: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Проверка всех прокси"""
-        try:
-            message = await query.edit_message_text("🔄 Проверка прокси...")
-            results = await self.proxy_manager.check_all_proxies()
-            
-            working = sum(1 for _, is_working in results if is_working)
-            total = len(results)
-            
-            status = (
-                "📊 *Результаты проверки:*\n\n"
-                f"📝 Всего проверено: {total}\n"
-                f"✅ Рабочих: {working}\n"
-                f"❌ Нерабочих: {total - working}\n"
-                f"📈 Процент рабочих: {round(working/total*100 if total else 0, 2)}%"
-            )
+    async def check_proxies(self, query: CallbackQuery, context: ContextTypes.DEFAULT_TYPE):
+       """Проверка всех прокси"""
+       try:
+           message = await query.message.edit_text("🔄 Проверка прокси...")
+           results = await self.proxy_manager.check_all_proxies()
+           
+           working = sum(1 for _, is_working in results if is_working)
+           total = len(results)
+           
+           status = (
+               "📊 *Результаты проверки:*\n\n"
+               f"📝 Всего проверено: {total}\n"
+               f"✅ Рабочих: {working}\n"
+               f"❌ Нерабочих: {total - working}\n"
+               f"📈 Процент рабочих: {round(working/total*100 if total else 0, 2)}%"
+           )
 
-            keyboard = [
-                [InlineKeyboardButton("🔄 Проверить снова", callback_data='check_proxies')],
-                [InlineKeyboardButton("« Назад", callback_data='back_to_proxies')]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await message.edit_text(
-                text=status,
-                reply_markup=reply_markup,
-                parse_mode='Markdown'
-            )
-            
-        except Exception as e:
-            self.logger.error(f"Ошибка при проверке прокси: {e}")
-            await query.edit_message_text(
-                "❌ Произошла ошибка при проверке прокси",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("« Назад", callback_data='back_to_proxies')
-                ]])
-            )
+           keyboard = [
+               [InlineKeyboardButton("« Назад", callback_data='back_to_proxies')]
+           ]
+           reply_markup = InlineKeyboardMarkup(keyboard)
+           
+           await message.edit_text(
+               text=status,
+               reply_markup=reply_markup,
+               parse_mode='Markdown'
+           )
+           
+       except Exception as e:
+           self.logger.error(f"Ошибка при проверке прокси: {e}")
+           await query.message.edit_text(
+               "❌ Произошла ошибка при проверке прокси",
+               reply_markup=InlineKeyboardMarkup([[
+                   InlineKeyboardButton("« Назад", callback_data='back_to_proxies')
+               ]])
+           )
 
     async def clear_invalid_proxies(self, query: Update, context: ContextTypes.DEFAULT_TYPE):
        """Удаление невалидных прокси"""
