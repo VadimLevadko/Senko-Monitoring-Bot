@@ -1,4 +1,5 @@
 import asyncio
+import os
 import logging
 from telethon import types
 from typing import Dict, Set, List, Optional, Any
@@ -41,38 +42,54 @@ class MessageMonitor:
             self.bot = app
             self.is_monitoring = False
             
-            # Первичная инициализация клиентов
+            # Инициализация клиентов с проверкой подключения
             await self.initialize_clients()
             if not self.monitoring_clients:
                 self.logger.error("Нет доступных клиентов")
                 return
 
-            # Инициализация распределителя
+            # Очищаем старые обработчики перед инициализацией
+            for client in self.monitoring_clients.values():
+                client.remove_event_handler(self.message_handler)
+                
+            # Инициализация распределителя с проверкой
             self.distributor = SmartDistributor(self.account_manager, self.db)
             await self.distributor.initialize()
+
+            # Проверяем работоспособность клиентов
+            if not await self.check_clients_health():
+                self.logger.error("Нет работоспособных клиентов")
+                return
 
             # Загрузка и распределение каналов
             channels = await self.db.load_channels()
             self.logger.info(f"Загружено каналов: {len(channels)}")
-            channel_ids = [int(channel['chat_id']) for channel in channels]
             
-            if not self.distributor.distribution:
-                distribution = await self.distributor.distribute_channels(
-                    channel_ids,
-                    list(self.monitoring_clients.keys())
-                )
-                if distribution:
-                    await self.distributor.apply_distribution(distribution)
-
-            # Настройка обработчиков для каждого клиента
-            for account_id, client in self.monitoring_clients.items():
-                client_channels = self.distributor.distribution.get(account_id, [])
-                if client_channels:
-                    client.add_event_handler(
-                        self.message_handler,
-                        events.NewMessage(chats=client_channels)
+            if channels:
+                channel_ids = [int(channel['chat_id']) for channel in channels]
+                # Распределяем каналы только если есть активные клиенты
+                active_clients = [
+                    client_id for client_id, client in self.monitoring_clients.items() 
+                    if client and client.is_connected()
+                ]
+                if active_clients:
+                    distribution = await self.distributor.distribute_channels(
+                        channel_ids,
+                        active_clients
                     )
-                    self.logger.info(f"Добавлен обработчик для {account_id} ({len(client_channels)} каналов)")
+                    if distribution:
+                        await self.distributor.apply_distribution(distribution)
+
+                        # Настройка обработчиков для каждого клиента
+                        for account_id, client in self.monitoring_clients.items():
+                            if client and client.is_connected():
+                                client_channels = distribution.get(account_id, [])
+                                if client_channels:
+                                    client.add_event_handler(
+                                        self.message_handler,
+                                        events.NewMessage(chats=client_channels)
+                                    )
+                                    self.logger.info(f"Добавлен обработчик для {account_id} ({len(client_channels)} каналов)")
 
             # Активация мониторинга
             self.is_monitoring = True
@@ -151,25 +168,78 @@ class MessageMonitor:
             allowed_chat_ids = [channel['chat_id'] for channel in allowed_channels]
 
             for account in accounts:
-                if account not in self.monitoring_clients:
-                    try:
-                        await asyncio.sleep(1)
+                try:
+                    if account not in self.monitoring_clients:
+                        await asyncio.sleep(1)  # Задержка между подключениями
                         client = await self.account_manager.create_client(account)
+                        
                         if client:
-                            self.logger.info(f"Клиент {account} создан успешно")
-                            # Добавляем обработчик только для разрешенных каналов
-                            client.add_event_handler(
-                                self.message_handler,
-                                events.NewMessage(chats=allowed_chat_ids)  # Фильтруем по списку разрешенных каналов
-                            )
-                            self.monitoring_clients[account] = client
-                    except Exception as e:
-                        self.logger.error(f"Ошибка при инициализации клиента {account}: {e}")
+                            # Проверяем подключение
+                            try:
+                                if not client.is_connected():
+                                    await client.connect()
+                                
+                                if await client.is_user_authorized():
+                                    self.logger.info(f"Клиент {account} создан и авторизован успешно")
+                                    self.monitoring_clients[account] = client
+                                    
+                                    # Добавляем обработчик
+                                    if allowed_chat_ids:
+                                        client.add_event_handler(
+                                            self.message_handler,
+                                            events.NewMessage(chats=allowed_chat_ids)
+                                        )
+                                else:
+                                    self.logger.error(f"Клиент {account} не авторизован")
+                                    continue
+                                    
+                            except Exception as e:
+                                self.logger.error(f"Ошибка при подключении клиента {account}: {e}")
+                                continue
+                                
+                except Exception as e:
+                    self.logger.error(f"Ошибка при инициализации клиента {account}: {e}")
 
-            self.logger.info(f"Инициализировано {len(self.monitoring_clients)} клиентов")
+            active_count = len([c for c in self.monitoring_clients.values() if c and c.is_connected()])
+            self.logger.info(f"Инициализировано {active_count} активных клиентов из {len(accounts)} аккаунтов")
 
         except Exception as e:
             self.logger.error(f"Ошибка при инициализации клиентов: {e}")
+
+    async def check_clients_health(self) -> bool:
+        try:
+            active_clients = 0
+            for account_id, client in self.monitoring_clients.items():
+                try:
+                    if client and client.is_connected():
+                        # Проверяем авторизацию
+                        if await client.is_user_authorized():
+                            # Пробуем выполнить простой запрос
+                            me = await client.get_me()
+                            if me:
+                                active_clients += 1
+                                continue
+                                
+                    # Если что-то пошло не так, пробуем переподключить клиента
+                    self.logger.warning(f"Переподключение клиента {account_id}")
+                    if client:
+                        await client.disconnect()
+                    new_client = await self.account_manager.create_client(account_id)
+                    if new_client:
+                        self.monitoring_clients[account_id] = new_client
+                        if await new_client.is_user_authorized():
+                            active_clients += 1
+                            
+                except Exception as e:
+                    self.logger.error(f"Ошибка при проверке клиента {account_id}: {e}")
+                    
+            self.stats['active_clients'] = active_clients
+            return active_clients > 0
+            
+        except Exception as e:
+            self.logger.error(f"Ошибка при проверке клиентов: {e}")
+            return False
+
 
     async def handle_account_failure(self, account_id: str, error: Exception) -> None:
         """Обработка выхода аккаунта из строя"""
@@ -215,20 +285,19 @@ class MessageMonitor:
             self.logger.error(f"Ошибка при обработке выхода аккаунта из строя: {e}")
 
     async def message_handler(self, event) -> None:
-        """Обработчик новых сообщений"""
         try:
             if not self.is_monitoring or not event.message:
                 return
-                
+                    
             chat = await event.get_chat()
             if hasattr(chat, 'type') and chat.type == 'private':
                 return
-                    
+                        
             message_unique_id = f"{event.chat_id}_{event.message.id}"
             
             if message_unique_id in self.processed_messages:
                 return
-                    
+                        
             self.processed_messages.add(message_unique_id)
             
             if len(self.processed_messages) > 1000:
@@ -238,12 +307,19 @@ class MessageMonitor:
             
             if not event.message.text:
                 return
-                    
+
+            # Определяем ID аккаунта-воркера
+            worker_phone = None
+            for phone, client in self.monitoring_clients.items():
+                if client == event.client:
+                    worker_phone = phone
+                    break
+                        
             # Загружаем ключевые слова
             keywords = self.db.load_keywords()
             if not keywords:
                 return
-                    
+                        
             # Ищем совпадения
             found_keywords = []
             message_text = event.message.text.lower()
@@ -254,9 +330,9 @@ class MessageMonitor:
             if not found_keywords:
                 return
 
-            # Обновляем статистику найденных ключевых слов - исправлено
+            # Обновляем статистику найденных ключевых слов
             self.stats['keywords_found'] = self.stats.get('keywords_found', 0) + len(found_keywords)
-                    
+                        
             self.logger.info(f"Найдены ключевые слова: {found_keywords}")
 
             # Получаем информацию об отправителе
@@ -299,24 +375,24 @@ class MessageMonitor:
             # Получаем список всех админов
             admins = await self.db.get_admins()
 
-            # Формируем уведомление с кликабельным отправителем
             notification = (
                 "🔍 *Найдено совпадение\\!*\n\n"
                 f"📱 *Группа:* `{escaped_chat_title}`\n"
                 f"👤 *Отправитель:* {sender_info}\n"
-                f"🔑 *Ключевые слова:* `{escaped_keywords}`\n\n"
+                f"🔑 *Ключевые слова:* `{escaped_keywords}`\n"
+                f"👨‍💻 *Воркер:* `{worker_phone}`\n\n"
                 f"💬 *Сообщение:*\n"
                 f"`{escaped_text}`\n\n"
                 f"🔗 [Ссылка на сообщение]({message_link})\n"
                 f"⏰ Время: `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`"
             )
 
-            # На случай, если форматирование не сработает, запасной вариант без разметки
             simple_notification = (
                 "🔍 Найдено совпадение!\n\n"
                 f"📱 Группа: {chat.title}\n"
                 f"👤 Отправитель: {sender_info}\n"
-                f"🔑 Ключевые слова: {', '.join(found_keywords)}\n\n"
+                f"🔑 Ключевые слова: {', '.join(found_keywords)}\n"
+                f"👨‍💻 Воркер: {worker_phone}\n\n"
                 f"💬 Сообщение:\n"
                 f"{event.message.text[:4000]}\n\n"
                 f"🔗 {message_link}\n"
@@ -390,12 +466,12 @@ class MessageMonitor:
             logger.error(f"Ошибка при отправке уведомления об ошибке: {e}")
 
     async def start_monitoring(self) -> None:
-        """Запуск мониторинга"""
         try:
             if not self.is_monitoring:
                 self.logger.info("Запуск мониторинга...")
                 
-                if not self.monitoring_clients:
+                # Проверяем клиентов перед запуском
+                if not await self.check_clients_health():
                     self.logger.error("Нет активных клиентов для мониторинга")
                     return
 
@@ -412,7 +488,6 @@ class MessageMonitor:
             self.logger.error(f"Ошибка при запуске мониторинга: {e}")
 
     async def stop_monitoring(self) -> None:
-        """Остановка мониторинга"""
         try:
             self.is_monitoring = False
             self.stats['status'] = 'Остановлен'
@@ -430,10 +505,10 @@ class MessageMonitor:
                         self.logger.info(f"Клиент {phone} отключен")
                 except Exception as e:
                     self.logger.error(f"Ошибка при отключении клиента {phone}: {e}")
-                
+                    
             self.monitoring_clients.clear()
             self.logger.info("Мониторинг остановлен")
-                
+                    
         except Exception as e:
             self.logger.error(f"Ошибка при остановке мониторинга: {e}")
 
@@ -448,6 +523,7 @@ class MessageMonitor:
                     
                 self.logger.info("Выполняется проверка состояния системы...")
                 
+                active_clients = 0
                 # Проверяем каждый аккаунт
                 for account_id, client in list(self.monitoring_clients.items()):
                     try:
@@ -466,15 +542,23 @@ class MessageMonitor:
                             )
                             continue
 
+                        # Проверяем работоспособность
                         try:
-                            await client.get_me()
+                            me = await client.get_me()
+                            if me:
+                                active_clients += 1
                         except Exception as e:
                             if "FLOOD_WAIT" in str(e):
                                 await self.handle_account_error(account_id, e)
                                 continue
+                            else:
+                                self.logger.error(f"Ошибка при проверке аккаунта {account_id}: {e}")
                                 
                     except Exception as e:
                         self.logger.error(f"Ошибка при проверке аккаунта {account_id}: {e}")
+                
+                # Обновляем статистику активных клиентов
+                self.stats['active_clients'] = active_clients
                         
                 # Проверяем необходимость перераспределения
                 if self.distributor:
@@ -485,7 +569,15 @@ class MessageMonitor:
                     if channels_count < self.stats['watched_channels']:
                         self.logger.warning("Обнаружены неотслеживаемые каналы, выполняем перераспределение")
                         await self.redistribute_channels()
-                        
+                    
+                # Если нет активных клиентов, пробуем переинициализировать
+                if active_clients == 0:
+                    self.logger.warning("Нет активных клиентов, попытка переинициализации")
+                    try:
+                        await self.initialize_clients()
+                    except Exception as e:
+                        self.logger.error(f"Ошибка при переинициализации клиентов: {e}")
+
         except asyncio.CancelledError:
             self.logger.info("Задача проверки состояния остановлена")
         except Exception as e:
@@ -738,11 +830,18 @@ class MessageMonitor:
         else:
             self.stats['uptime'] = '0:00:00'
 
-        self.stats['active_clients'] = len([client for client in self.monitoring_clients.values() if client.is_connected()])
+        # Проверяем реальное количество активных клиентов
+        active_clients = len([
+            client for client in self.monitoring_clients.values() 
+            if client and client.is_connected()
+        ])
+        self.stats['active_clients'] = active_clients
         
-        distribution = self.distributor.distribution if self.distributor else {}
-        total_channels = len(set().union(*[channels for channels in distribution.values()])) if distribution else 0
-        self.stats['watched_channels'] = total_channels
+        # Обновляем статус на основе активных клиентов
+        if active_clients > 0:
+            self.stats['status'] = 'Активен'
+        else:
+            self.stats['status'] = 'Остановлен'
 
         return self.stats
 

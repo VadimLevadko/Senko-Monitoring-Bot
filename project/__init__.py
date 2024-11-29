@@ -173,52 +173,74 @@ class TelegramMonitorBot:
             return {}
 
     async def check_status(self) -> bool:
+        """Проверка статуса всех компонентов системы"""
         try:
-
-            db_status = False
+            # 1. Проверка базы данных
             try:
                 db_status = self.db_manager.is_connected()
+                if not db_status:
+                    self.logger.error("Компонент database не работает")
             except Exception as e:
                 self.logger.error(f"Ошибка при проверке статуса БД: {e}")
+                db_status = False
 
-            monitor_status = self.message_monitor.is_monitoring
-
-            # Проверяем все активные клиенты
-            active_clients = 0
-            for client in self.message_monitor.monitoring_clients.values():
-                try:
-                    if client and client.is_connected() and await client.is_user_authorized():
-                        active_clients += 1
-                except Exception as e:
-                    self.logger.error(f"Ошибка при проверке клиента: {e}")
-
-            # Проверяем наличие аккаунтов
+            # 2. Проверка наличия аккаунтов
             accounts = self.account_manager.get_accounts()
             has_accounts = len(accounts) > 0
-
-            # Для каждого компонента выводим статус
-            if not db_status:
-                self.logger.error(f"Компонент database не работает")
-                
-            # Не считаем отсутствие аккаунтов критической ошибкой
             if not has_accounts:
                 self.logger.warning("В системе нет добавленных аккаунтов")
-            else:
-                # Проверяем остальные компоненты только если есть аккаунты
-                if not monitor_status:
-                    self.logger.error(f"Компонент monitor не работает")
-                if not active_clients:
-                    self.logger.error(f"Компонент active_clients не работает")
+                return db_status  # Если нет аккаунтов, проверяем только БД
 
-            # Система считается работоспособной если:
-            # 1. База данных работает
-            # 2. Если есть аккаунты, то монитор и клиенты должны работать
-            # 3. Если аккаунтов нет, то проверяем только БД
-            all_ok = db_status and (not has_accounts or (monitor_status and active_clients > 0))
+            # 3. Проверка активных клиентов
+            active_clients = 0
+            clients_status = {}  # Для детальной информации о статусе каждого клиента
+            
+            for phone, client in self.message_monitor.monitoring_clients.items():
+                try:
+                    if client and client.is_connected():
+                        if await client.is_user_authorized():
+                            active_clients += 1
+                            clients_status[phone] = "active"
+                        else:
+                            clients_status[phone] = "unauthorized"
+                    else:
+                        clients_status[phone] = "disconnected"
+                except Exception as e:
+                    self.logger.error(f"Ошибка при проверке клиента {phone}: {e}")
+                    clients_status[phone] = "error"
+
+            # 4. Обновление статуса мониторинга
+            if active_clients > 0:
+                # Если есть активные клиенты, активируем мониторинг
+                self.message_monitor.is_monitoring = True
+                self.message_monitor.stats['status'] = 'Активен'
+                self.message_monitor.stats['active_clients'] = active_clients
+            else:
+                self.logger.error("Компонент active_clients не работает")
+                # Детальная информация о состоянии клиентов
+                for phone, status in clients_status.items():
+                    self.logger.debug(f"Клиент {phone}: {status}")
+
+            # 5. Проверка статуса монитора
+            monitor_status = self.message_monitor.is_monitoring
+            if not monitor_status:
+                self.logger.error("Компонент monitor не работает")
+
+            # 6. Итоговая проверка
+            all_ok = all([
+                db_status,              # БД работает
+                monitor_status,         # Монитор активен
+                active_clients > 0      # Есть активные клиенты
+            ])
 
             if not all_ok:
-                self.logger.warning("Не все компоненты работают корректно")
-            
+                self.logger.warning(
+                    "Не все компоненты работают корректно\n"
+                    f"БД: {'✅' if db_status else '❌'}\n"
+                    f"Монитор: {'✅' if monitor_status else '❌'}\n"
+                    f"Активные клиенты: {active_clients}/{len(accounts)}"
+                )
+
             return all_ok
 
         except Exception as e:

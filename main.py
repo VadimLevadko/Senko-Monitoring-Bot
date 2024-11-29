@@ -555,7 +555,6 @@ async def main():
         
         try:
             bot = create_bot()
-            
             application = await setup_application(bot)
             
             async with application:
@@ -563,12 +562,24 @@ async def main():
                 await application.start()
 
                 try:
+                    # Базовая инициализация
                     await bot.start()
                     await bot.message_monitor.initialize(application)
+                    
+                    # Проверяем наличие аккаунтов
+                    accounts = bot.account_manager.get_accounts()
+                    if accounts:
+                        await bot.message_monitor.initialize_clients()
+                        await asyncio.sleep(3)
+                        await bot.message_monitor.start_monitoring()
+                    else:
+                        logger.info("Бот запущен в режиме без мониторинга (нет аккаунтов)")
+                    
                 except Exception as e:
                     logger.error(f"Ошибка при запуске компонентов бота: {e}")
-                    raise
-                
+                    if "Не удалось инициализировать клиентов" not in str(e):
+                        raise
+
                 print("Бот запущен. Нажмите Ctrl+C для остановки.")
 
                 await application.updater.start_polling(
@@ -586,21 +597,22 @@ async def main():
                     
                     while True:
                         await asyncio.sleep(1)
-                        
 
                         current_time = time.time()
                         if current_time - last_check_time >= status_check_interval:
-                            if not await bot.check_status():
-                                logger.warning("Обнаружены проблемы с компонентами")
-                                recovery_attempts = 3
-                                for _ in range(recovery_attempts):
-                                    await asyncio.sleep(10)
-                                    if await bot.check_status():
-                                        logger.info("Система восстановилась")
-                                        break
-                                else:
-                                    logger.error("Система не смогла восстановиться, требуется перезапуск")
-                                    raise Exception("Component failure detected")
+                            current_accounts = bot.account_manager.get_accounts()
+                            if current_accounts:  # Проверяем статус только если есть аккаунты
+                                if not await bot.check_status():
+                                    logger.warning("Обнаружены проблемы с компонентами")
+                                    recovery_attempts = 3
+                                    for _ in range(recovery_attempts):
+                                        await asyncio.sleep(10)
+                                        if await bot.check_status():
+                                            logger.info("Система восстановилась")
+                                            break
+                                    else:
+                                        logger.error("Система не смогла восстановиться, требуется перезапуск")
+                                        raise Exception("Component failure detected")
                             last_check_time = current_time
                             
                 except asyncio.CancelledError:

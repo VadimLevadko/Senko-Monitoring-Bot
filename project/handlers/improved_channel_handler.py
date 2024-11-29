@@ -1,119 +1,63 @@
 import logging
 import asyncio
+from telethon import events
 from typing import List, Dict, Tuple, Any
-from telethon.tl.types import Channel, PeerChannel
+from telethon.tl.types import Channel, PeerChannel, Chat, InputPeerChannel
 from telethon.tl.functions.channels import JoinChannelRequest
+from telethon.tl.functions.messages import ImportChatInviteRequest
 
 class ImprovedChannelHandler:
     def __init__(self, message_monitor, db_manager):
         self.monitor = message_monitor
         self.db = db_manager
         self.logger = logging.getLogger(__name__)
-
+        
     async def process_channel_addition(self, channel_links: List[str], progress_callback) -> Tuple[int, List[str]]:
         added = 0
         errors = []
         total = len(channel_links)
-        
+        new_channels = []
+
         try:
-            # Проверка наличия клиентов
             if not self.monitor.monitoring_clients:
                 return 0, ["❌ Нет доступных клиентов для добавления каналов"]
 
-            # Информация о распределении до
+            # Получаем текущее распределение    
             distribution_before = await self.monitor.distributor.load_distribution()
             stats_before = self._get_distribution_stats(distribution_before)
             
-            await progress_callback(
-                "📊 *Текущее распределение:*\n\n" + 
-                self._format_distribution_stats(stats_before)
-            )
+            # Проверяем валидность каналов через один клиент
+            check_client = next(iter(self.monitor.monitoring_clients.values()))
 
-            # Получаем клиент для проверки
-            client = next(iter(self.monitor.monitoring_clients.values()))
-
-            # Обработка каждого канала
             for i, link in enumerate(channel_links, 1):
                 try:
-
-                    status = (
-                        f"🔄 *Обработка канала {i}/{total}*\n\n"
-                        f"🔗 Канал: `{link}`\n"
-                        f"✅ Добавлено: `{added}`\n"
-                        f"❌ Ошибок: `{len(errors)}`"
-                    )
+                    status = f"🔄 *Проверка канала {i}/{total}*\n\n"
                     await progress_callback(status)
 
                     chat_link = self._process_channel_link(link)
+                    entity = await check_client.get_entity(chat_link)
+
+                    if not isinstance(entity, (Channel, PeerChannel)):
+                        errors.append(f"{link}: Это не канал или группа")
+                        continue
+
+                    if await self._is_channel_exists(entity.id):
+                        errors.append(f"{link}: Канал уже добавлен")
+                        continue
+
+                    # Сохраняем канал в базу
+                    await self.db.add_channel(
+                        chat_id=entity.id,
+                        title=entity.title,
+                        username=entity.username
+                    )
                     
-                    try:
-                        entity = await client.get_entity(chat_link)
-                        
-                        await progress_callback(
-                            f"{status}\n\n"
-                            f"📢 Название: `{entity.title}`\n"
-                            "✅ Информация получена"
-                        )
-
-                        if not isinstance(entity, (Channel, PeerChannel)):
-                            errors.append(f"{link}: Это не канал или группа")
-                            continue
-
-                        # Проверка на дубликат
-                        if await self._is_channel_exists(entity.id):
-                            errors.append(f"{link}: Канал уже добавлен")
-                            continue
-
-                        # Добавляем задержку перед вступлением
-                        for sec in range(30, 0, -1):
-                            if sec % 5 == 0:  # Обновляем статус каждые 5 секунд
-                                await progress_callback(
-                                    f"{status}\n\n"
-                                    f"📢 Название: `{entity.title}`\n"
-                                    f"⏳ Ожидание: `{sec}` сек"
-                                )
-                            await asyncio.sleep(1)
-
-                        # Вступаем в канал
-                        await progress_callback(
-                            f"{status}\n\n"
-                            f"📢 Название: `{entity.title}`\n"
-                            "🔄 Вступаем в канал..."
-                        )
-
-                        await self._join_channel(client, entity)
-                        
-                        # Сохраняем канал
-                        await self.db.add_channel(
-                            chat_id=entity.id,
-                            title=entity.title,
-                            username=entity.username
-                        )
-                        
-                        added += 1
-                        await progress_callback(
-                            f"{status}\n\n"
-                            f"📢 Название: `{entity.title}`\n"
-                            "✅ Канал успешно добавлен"
-                        )
-                        
-                        await asyncio.sleep(2)
-
-                    except Exception as e:
-                        error_text = str(e).lower()
-                        if "wait" in error_text:
-                            wait_time = int(''.join(filter(str.isdigit, error_text)))
-                            for remaining in range(wait_time, 0, -1):
-                                if remaining % 5 == 0:
-                                    await progress_callback(
-                                        f"{status}\n\n"
-                                        f"⚠️ Требуется ожидание: `{remaining}` сек"
-                                    )
-                                await asyncio.sleep(1)
-                            continue
-                        else:
-                            errors.append(f"{link}: {str(e)}")
-                            continue
+                    new_channels.append({
+                        'id': entity.id,
+                        'title': entity.title,
+                        'entity': entity
+                    })
+                    added += 1
 
                 except Exception as e:
                     errors.append(f"{link}: {str(e)}")
@@ -121,13 +65,55 @@ class ImprovedChannelHandler:
 
             if added > 0:
                 await progress_callback(
-                    "⚡️ *Перераспределение каналов*\n\n"
+                    "⚡️ *Распределение каналов*\n\n"
                     "🔄 Расчет оптимального распределения..."
                 )
 
-                new_distribution = await self.monitor.redistribute_channels()
+                # Получаем все каналы и выполняем распределение
+                all_channels = await self.db.load_channels()
+                channel_ids = [int(channel['chat_id']) for channel in all_channels]
                 
+                new_distribution = await self.monitor.distributor.distribute_channels(
+                    channel_ids,
+                    list(self.monitor.monitoring_clients.keys())
+                )
+
                 if new_distribution:
+                    await self.monitor.distributor.apply_distribution(new_distribution)
+
+                    # Теперь вступаем в каналы
+                    for account_id, channels in new_distribution.items():
+                        client = self.monitor.monitoring_clients.get(account_id)
+                        if client:
+                            for new_channel in new_channels:
+                                if new_channel['id'] in channels:
+                                    await progress_callback(
+                                        f"🔄 Вступаем в канал {new_channel['title']} через аккаунт {account_id}..."
+                                    )
+                                    
+                                    # Добавляем задержку перед вступлением
+                                    for sec in range(30, 0, -1):
+                                        if sec % 5 == 0:
+                                            await progress_callback(
+                                                f"⏳ Ожидание перед вступлением: {sec} сек"
+                                            )
+                                        await asyncio.sleep(1)
+                                    
+                                    try:
+                                        await self.safe_join_channel(client, new_channel['id'])
+                                        await asyncio.sleep(5)
+                                    except Exception as e:
+                                        self.logger.error(f"Ошибка при вступлении в канал {new_channel['id']}: {e}")
+
+                            # Обновляем обработчики
+                            for handler in client.list_event_handlers():
+                                client.remove_event_handler(handler[0])
+
+                            client.add_event_handler(
+                                self.monitor.message_handler,
+                                events.NewMessage(chats=channels)
+                            )
+
                     stats_after = self._get_distribution_stats(new_distribution)
                     
                     result = (
@@ -167,12 +153,59 @@ class ImprovedChannelHandler:
         channels = await self.db.load_channels()
         return any(int(channel['chat_id']) == chat_id for channel in channels)
 
-    async def _join_channel(self, client, entity) -> None:
+    async def safe_join_channel(self, client, chat_id: int) -> bool:
+        """Безопасное вступление в канал или группу"""
         try:
-            await client(JoinChannelRequest(entity))
-            await asyncio.sleep(2)
+            try:
+                # Сначала пробуем получить сущность через username
+                entity = None
+                channels = await self.db.load_channels()
+                for channel in channels:
+                    if int(channel['chat_id']) == chat_id and channel.get('username'):
+                        try:
+                            entity = await client.get_entity(f"@{channel['username']}")
+                            break
+                        except:
+                            pass
+
+                # Если не получилось через username, пробуем напрямую через ID
+                if not entity:
+                    entity = await client.get_entity(chat_id)
+
+                # Пытаемся вступить
+                if isinstance(entity, (Channel, Chat)):
+                    try:
+                        await client(JoinChannelRequest(entity))
+                        self.logger.info(f"Успешно присоединились к чату: {entity.title}")
+                        await asyncio.sleep(2)
+                        return True
+                    except Exception as e:
+                        self.logger.error(f"Ошибка при вступлении в чат {entity.title}: {e}")
+                        return False
+                else:
+                    self.logger.error(f"Неподдерживаемый тип чата: {type(entity)}")
+                    return False
+
+            except ValueError as e:
+                # Если не удалось получить сущность, пробуем через диалоги
+                try:
+                    dialogs = await client.get_dialogs()
+                    for dialog in dialogs:
+                        if dialog.entity.id == chat_id:
+                            entity = dialog.entity
+                            await client(JoinChannelRequest(entity))
+                            self.logger.info(f"Успешно присоединились к чату через диалоги: {entity.title}")
+                            await asyncio.sleep(2)
+                            return True
+                    self.logger.error(f"Не удалось найти чат {chat_id} в диалогах")
+                    return False
+                except Exception as e:
+                    self.logger.error(f"Ошибка при поиске в диалогах: {e}")
+                    return False
+
         except Exception as e:
-            raise Exception(f"Ошибка при вступлении: {str(e)}")
+            self.logger.error(f"Ошибка при получении информации о чате {chat_id}: {e}")
+            return False
 
     def _get_distribution_stats(self, distribution: Dict[str, List[int]]) -> Dict[str, Any]:
         stats = {
