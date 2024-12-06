@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import telegram
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, error as telegram_error
 from telegram.ext import ContextTypes
 from typing import Dict, List, Tuple, Optional
@@ -378,7 +379,20 @@ class AccountHandler:
                         new_proxy = await self.account_manager.proxy_manager.reserve_proxy()
                         
                         if new_proxy:
-                            # Сохраняем новую прокси
+                            # Форматируем строку прокси для удаления
+                            proxy_str = f"{new_proxy['addr']}:{new_proxy['port']}:{new_proxy['username']}:{new_proxy['password']}"
+                            
+                            # Читаем текущий список прокси
+                            with open(self.account_manager.proxy_manager.proxy_file, 'r') as f:
+                                proxies = f.readlines()
+                            
+                            # Удаляем использованную прокси из списка
+                            with open(self.account_manager.proxy_manager.proxy_file, 'w') as f:
+                                for proxy in proxies:
+                                    if proxy.strip() != proxy_str:
+                                        f.write(proxy)
+                                        
+                            # Сохраняем новую прокси для аккаунта
                             with open(proxy_path, 'w', encoding='utf-8') as f:
                                 json.dump(new_proxy, f, indent=4)
                                 
@@ -395,12 +409,37 @@ class AccountHandler:
                             try:
                                 new_client = await self.account_manager.create_client(phone)
                                 if new_client:
+                                    # Добавляем в список клиентов
                                     self.account_manager.monitoring_clients[phone] = new_client
+                                    self.message_monitor.monitoring_clients[phone] = new_client
+                                    
+                                    # Инициализируем мониторинг для нового клиента
+                                    try:
+                                        # Получаем распределенные каналы для этого аккаунта
+                                        channels = self.message_monitor.distributor.distribution.get(phone, [])
+                                        
+                                        # Добавляем обработчик сообщений для каналов
+                                        if channels:
+                                            new_client.add_event_handler(
+                                                self.message_monitor.message_handler,
+                                                events.NewMessage(chats=channels)
+                                            )
+                                        
+                                        # Обновляем статистику активных клиентов
+                                        self.message_monitor.stats['active_clients'] = len(
+                                            [c for c in self.message_monitor.monitoring_clients.values() 
+                                             if c and c.is_connected()]
+                                        )
+                                        
+                                    except Exception as e:
+                                        self.logger.error(f"Ошибка при инициализации мониторинга для {phone}: {e}")
+                                    
                                     self.logger.info(f"Обновлена прокси для {phone}")
                                     updated += 1
+                                    
                             except Exception as e:
                                 self.logger.error(f"Не удалось создать клиент с новой прокси для {phone}: {e}")
-                    
+                
                 except Exception as e:
                     self.logger.error(f"Ошибка при обновлении прокси для {phone}: {e}")
                     errors.append(phone)
@@ -434,6 +473,7 @@ class AccountHandler:
                 parse_mode='Markdown'
             )
             return STATES['MANAGING_ACCOUNTS']
+
             
     async def handle_account_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик callback-ов"""
@@ -467,14 +507,13 @@ class AccountHandler:
                     
         except Exception as e:
             self.logger.error(f"Ошибка при обработке callback {query.data}: {e}")
-            if update.callback_query and update.callback_query.message:
-                await update.callback_query.message.edit_text(
-                    "❌ Произошла ошибка. Попробуйте еще раз.",
-                    reply_markup=InlineKeyboardMarkup([[
-                        InlineKeyboardButton("« Назад", callback_data='back_to_accounts')
-                    ]]),
-                    parse_mode='Markdown'
-                )
+            await update.callback_query.message.edit_text(
+                "❌ Произошла ошибка. Попробуйте еще раз.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("« Назад", callback_data='back_to_accounts')
+                ]]),
+                parse_mode='Markdown'
+            )
             return STATES['MANAGING_ACCOUNTS']
 
     async def start_account_addition(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -638,13 +677,14 @@ class AccountHandler:
             return STATES['MANAGING_ACCOUNTS']
 
     def get_handlers(self):
-        """Получить все обработчики для регистрации"""
         return [
             self.show_accounts_menu,
             self.handle_account_callback,
-            self.receive_account_file,
-            self.finish_account_addition,
-            self.delete_invalid_accounts,
-            self.update_invalid_proxies,
-            self.list_accounts
+            self.add_proxies,
+            self.finish_proxy_addition,
+            self.list_accounts,
+            self.check_proxies,
+            self.clear_invalid_proxies,
+            self.update_invalid_proxies,  # Добавляем в список обработчиков
+            self.delete_invalid_accounts
         ]
