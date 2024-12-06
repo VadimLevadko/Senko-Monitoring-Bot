@@ -1,3 +1,10 @@
-216.173.105.194:6051:sbbkvcrt:epal2o1erekj
-166.88.169.139:6746:sbbkvcrt:epal2o1erekj
-104.222.168.193:6009:sbbkvcrt:epal2o1erekj
+198.23.239.134:6540:sbbkvcrt:epal2o1erekj
+207.244.217.165:6712:sbbkvcrt:epal2o1erekj
+107.172.163.27:6543:sbbkvcrt:epal2o1erekj
+64.137.42.112:5157:sbbkvcrt:epal2o1erekj
+173.211.0.148:6641:sbbkvcrt:epal2o1erekj
+161.123.152.115:6360:sbbkvcrt:epal2o1erekj
+167.160.180.203:6754:sbbkvcrt:epal2o1erekj
+154.36.110.199:6853:sbbkvcrt:epal2o1erekj
+173.0.9.70:5653:sbbkvcrt:epal2o1erekj
+173.0.9.209:5792:sbbkvcrt:epal2o1erekj
